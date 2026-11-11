@@ -1,0 +1,68 @@
+name: Setup sccache (S3 backend)
+description: >
+  Installs a pinned sccache (binary cached in S3), points it at an S3-compatible bucket and sets
+  RUSTC_WRAPPER for later steps. Outside the default branch, sccache runs READ_ONLY so untrusted
+  code (pull requests) can use the cache but can never write to it.
+
+inputs:
+  sccache-version:
+    description: Exact sccache version, e.g. 0.19.0
+    required: true
+  scope:
+    description: Cache namespace (absolute paths are part of Rust cache keys, so scope per repository).
+    required: false
+    default: ${{ github.repository }}
+  s3-endpoint:
+    description: S3 endpoint URL. If empty, sccache is not enabled.
+    required: false
+  s3-bucket:
+    required: false
+  s3-access-key-id:
+    required: false
+  s3-secret-access-key:
+    required: false
+  s3-region:
+    required: false
+    default: us-east-1
+  s3-write:
+    description: >
+      Allow writing build outputs to the cache. Only honoured on runs of the default branch;
+      everywhere else sccache is forced to READ_ONLY. Pass a write credential only to trusted
+      workflows and a read-only credential to everything else.
+    required: false
+    default: 'false'
+  s3-prefix:
+    description: Key prefix for compile outputs
+    required: false
+    default: sccache
+  tools-prefix:
+    description: Key prefix for the cached sccache binary
+    required: false
+    default: tools
+
+outputs:
+  enabled:
+    description: 'true if sccache is active for subsequent steps'
+    value: ${{ steps.setup.outputs.enabled }}
+  rw-mode:
+    description: READ_WRITE or READ_ONLY
+    value: ${{ steps.setup.outputs.rw-mode }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: bash
+      env:
+        SCCACHE_VERSION: ${{ inputs.sccache-version }}
+        SCOPE: ${{ inputs.scope }}
+        S3_ENDPOINT: ${{ inputs.s3-endpoint }}
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+        S3_ACCESS_KEY_ID: ${{ inputs.s3-access-key-id }}
+        S3_SECRET_ACCESS_KEY: ${{ inputs.s3-secret-access-key }}
+        S3_REGION: ${{ inputs.s3-region }}
+        S3_WRITE: ${{ inputs.s3-write }}
+        S3_PREFIX: ${{ inputs.s3-prefix }}
+        TOOLS_PREFIX: ${{ inputs.tools-prefix }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: ${{ github.action_path }}/run.sh

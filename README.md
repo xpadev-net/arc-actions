@@ -5,6 +5,8 @@ Shared actions and reusable workflows for self-hosted ARC runners.
 | Path | Kind | Description |
 | --- | --- | --- |
 | [`setup-node`](setup-node) | composite action | Drop-in wrapper for `actions/setup-node` backed by an S3 toolcache |
+| [`setup-cargo-tool`](setup-cargo-tool) | composite action | Pinned prebuilt cargo tools (`cargo-deny`, `sccache`) restored from S3 |
+| [`setup-sccache`](setup-sccache) | composite action | sccache with an S3 backend; read-only outside the default branch |
 | [`setup-rust`](setup-rust) | composite action | rustup-based Rust toolchain install backed by an S3 cache (installs rustup if missing) |
 
 ## setup-node
@@ -51,11 +53,55 @@ read-only key there and `s3-write: false`.
 - Pinned toolchains: `1.99.1`, `nightly-2026-01-01`. Aliases (`stable`, `beta`, `nightly`, `1.99`) use plain rustup.
 - Miss / S3 error: regular `rustup toolchain install`, then optional upload.
 
+## setup-cargo-tool
+
+```yaml
+- uses: xpadev-net/arc-actions/setup-cargo-tool@v1
+  with:
+    tools: |
+      cargo-deny@0.20.2
+    s3-endpoint: ${{ secrets.S3_ENDPOINT }}
+    s3-bucket: ${{ secrets.S3_BUCKET }}
+    s3-access-key-id: ${{ secrets.S3_ACCESS_KEY_ID }}
+    s3-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+```
+
+- Downloads release binaries (no `cargo install`/compilation). On a miss the upstream archive is fetched from
+  GitHub, its SHA-256 is verified, and it is stored in S3 (only when writing is allowed).
+- Exact versions only (`x.y.z`). Currently supported: `cargo-deny`, `sccache`. Add a tool in `lib/tool.sh`.
+- Objects: `<s3-prefix>/<tool>/<version>/<arch>.tar.gz` (default prefix `tools`).
+
+## setup-sccache
+
+```yaml
+- uses: xpadev-net/arc-actions/setup-sccache@v1
+  with:
+    sccache-version: 0.19.0
+    s3-endpoint: ${{ secrets.S3_ENDPOINT }}
+    s3-bucket: ${{ secrets.S3_BUCKET }}
+    s3-access-key-id: ${{ secrets.S3_ACCESS_KEY_ID }}
+    s3-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+    s3-write: true            # honoured only on the default branch
+- run: cargo build --release
+- run: sccache --show-stats   # composite actions have no post step; print stats yourself
+```
+
+- Exports `RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0` and the `SCCACHE_*` / `AWS_*` variables for later steps.
+  If sccache cannot reach the backend, it is not enabled and the build runs normally.
+- Objects live under `<s3-prefix>/<scope>/` (default `sccache/<owner>/<repo>`); scope per repository because
+  absolute paths are part of Rust cache keys.
+- **Trust model**: only runs of the default branch (push / workflow_dispatch / schedule / merge_group) with
+  `s3-write: true` use `READ_WRITE`. Everything else, including pull requests, is forced to
+  `SCCACHE_S3_RW_MODE=READ_ONLY`: it reads the default branch's cache but cannot poison it.
+  Still hand a **read-only** S3 key to untrusted workflows, since a PR can edit its own workflow.
+- Do not use sccache for release builds unless they run on the default branch with a read-only key.
+
 ## Cache poisoning
 
 The S3 objects are executables that later jobs run. Therefore:
 
-- `s3-write` is **ignored on `pull_request` / `pull_request_target`** events.
+- `setup-node` / `setup-rust`: `s3-write` is **ignored on `pull_request` / `pull_request_target`** events.
+- `setup-cargo-tool` / `setup-sccache`: writes are honoured **only on the default branch** (stricter).
 - A same-repo PR can edit its own workflow, so this guard is not enough on its own. Give write credentials
   only to a trusted context (e.g. a GitHub Environment restricted to `main`/tags) and use a read-only key
   everywhere else (SeaweedFS identity with only `Read`/`List`).

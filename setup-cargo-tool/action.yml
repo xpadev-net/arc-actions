@@ -1,0 +1,55 @@
+name: Setup cargo tool (S3 binary cache)
+description: >
+  Installs prebuilt binaries of pinned cargo tools (cargo-deny, sccache), restoring them from an
+  S3-compatible bucket when possible. On a miss the release binary is downloaded from GitHub,
+  SHA-256 verified and (optionally) uploaded to S3. No compilation is involved.
+
+inputs:
+  tools:
+    description: >
+      Tools to install, one per line or comma separated, as name@x.y.z (e.g. cargo-deny@0.20.2).
+      Supported: cargo-deny, sccache. Versions must be pinned exactly.
+    required: true
+  s3-endpoint:
+    description: S3 endpoint URL. If empty, always download from upstream.
+    required: false
+  s3-bucket:
+    required: false
+  s3-access-key-id:
+    required: false
+  s3-secret-access-key:
+    required: false
+  s3-region:
+    required: false
+    default: us-east-1
+  s3-write:
+    description: >
+      Upload to S3 on cache miss. Only honoured on runs of the default branch (push,
+      workflow_dispatch, schedule, merge_group); ignored everywhere else, including pull requests.
+    required: false
+    default: 'false'
+  s3-prefix:
+    required: false
+    default: tools
+
+outputs:
+  s3-cache-hit:
+    description: 'true if every tool was restored without contacting upstream'
+    value: ${{ steps.setup.outputs.s3-cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: bash
+      env:
+        TOOLS: ${{ inputs.tools }}
+        S3_ENDPOINT: ${{ inputs.s3-endpoint }}
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+        S3_ACCESS_KEY_ID: ${{ inputs.s3-access-key-id }}
+        S3_SECRET_ACCESS_KEY: ${{ inputs.s3-secret-access-key }}
+        S3_REGION: ${{ inputs.s3-region }}
+        S3_WRITE: ${{ inputs.s3-write }}
+        S3_PREFIX: ${{ inputs.s3-prefix }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: ${{ github.action_path }}/run.sh

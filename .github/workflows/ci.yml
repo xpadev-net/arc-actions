@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
-        run: shellcheck -x -P SCRIPTDIR lib/*.sh setup-rust/*.sh
+        run: shellcheck -x -P SCRIPTDIR lib/*.sh setup-rust/*.sh setup-cargo-tool/*.sh setup-sccache/*.sh
       - name: actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
@@ -64,7 +64,8 @@ jobs:
           s3-secret-access-key: testsecret123
       - name: assert hit
         run: |
-          [ "${{ steps.second.outputs.s3-cache-hit }}" = "true" ]
+          # pull_request: s3-write is ignored, so nothing was uploaded and the 2nd run misses too
+          [ "${{ steps.second.outputs.s3-cache-hit }}" = "${{ github.event_name == 'pull_request' && 'false' || 'true' }}" ]
           [ "$(node -v)" = "v${NODE_VERSION}" ]
 
       - name: alias version falls back to actions/setup-node
@@ -127,6 +128,102 @@ jobs:
           s3-secret-access-key: testsecret123
       - name: assert hit
         run: |
-          [ "${{ steps.second.outputs.s3-cache-hit }}" = "true" ]
+          [ "${{ steps.second.outputs.s3-cache-hit }}" = "${{ github.event_name == 'pull_request' && 'false' || 'true' }}" ]
           rustc --version | grep -F "rustc ${RUST_VERSION} "
           cargo clippy --version
+
+  setup-cargo-tool:
+    runs-on: ubuntu-latest
+    env:
+      S3_ENDPOINT: http://localhost:8333
+      S3_BUCKET: cache
+      S3_ACCESS_KEY_ID: testkey
+      S3_SECRET_ACCESS_KEY: testsecret123
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Start SeaweedFS (S3)
+        run: |
+          docker run -d --name seaweedfs -p 8333:8333 \
+            -e AWS_ACCESS_KEY_ID=testkey -e AWS_SECRET_ACCESS_KEY=testsecret123 \
+            chrislusf/seaweedfs:4.53 server -dir=/data -s3 -volume.max=10
+          for _ in $(seq 60); do curl -s -o /dev/null http://localhost:8333/ && break; sleep 1; done
+          sleep 3
+          curl -sf -X PUT --aws-sigv4 aws:amz:us-east-1:s3 --user testkey:testsecret123 \
+            -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" http://localhost:8333/cache
+
+      - name: Seed cache (script, simulated default-branch run)
+        run: |
+          S3_WRITE=true GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main DEFAULT_BRANCH=main \
+            TOOLS=cargo-deny@0.20.2 ./setup-cargo-tool/run.sh
+      - name: Wipe local copy
+        run: rm -rf "$RUNNER_TOOL_CACHE/arc-tools"
+      - name: Use the action (hit expected)
+        id: tool
+        uses: ./setup-cargo-tool
+        with:
+          tools: cargo-deny@0.20.2
+          s3-endpoint: http://localhost:8333
+          s3-bucket: cache
+          s3-access-key-id: testkey
+          s3-secret-access-key: testsecret123
+      - name: assert hit
+        run: |
+          [ "${{ steps.tool.outputs.s3-cache-hit }}" = "true" ]
+          cargo deny --version | grep -F 0.20.2
+      - name: write is refused outside the default branch
+        run: |
+          rm -rf "$RUNNER_TOOL_CACHE/arc-tools"
+          out="$(S3_WRITE=true GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/1/merge DEFAULT_BRANCH=main \
+            TOOLS=cargo-deny@0.19.0 ./setup-cargo-tool/run.sh 2>&1)"
+          echo "$out"
+          grep -q "s3-write is ignored" <<<"$out"
+          ! grep -q Uploaded <<<"$out"
+
+  setup-sccache:
+    runs-on: ubuntu-latest
+    env:
+      S3_ENDPOINT: http://localhost:8333
+      S3_BUCKET: cache
+      S3_ACCESS_KEY_ID: testkey
+      S3_SECRET_ACCESS_KEY: testsecret123
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Start SeaweedFS (S3)
+        run: |
+          docker run -d --name seaweedfs -p 8333:8333 \
+            -e AWS_ACCESS_KEY_ID=testkey -e AWS_SECRET_ACCESS_KEY=testsecret123 \
+            chrislusf/seaweedfs:4.53 server -dir=/data -s3 -volume.max=10
+          for _ in $(seq 60); do curl -s -o /dev/null http://localhost:8333/ && break; sleep 1; done
+          sleep 3
+          curl -sf -X PUT --aws-sigv4 aws:amz:us-east-1:s3 --user testkey:testsecret123 \
+            -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" http://localhost:8333/cache
+
+      - name: Seed compile cache (script, simulated default-branch run)
+        run: |
+          cargo init --lib --name demo "$RUNNER_TEMP/demo"
+          S3_WRITE=true GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main DEFAULT_BRANCH=main \
+            SCCACHE_VERSION=0.19.0 SCOPE=ci ./setup-sccache/run.sh
+          # the script exported RUSTC_WRAPPER etc. via GITHUB_ENV for the following steps
+      - name: Build (miss, writes to cache)
+        run: |
+          cd "$RUNNER_TEMP/demo" && cargo build
+          sccache --show-stats | grep -E "Cache misses +[1-9]"
+      - name: Use the action in the real context
+        id: sccache
+        uses: ./setup-sccache
+        with:
+          sccache-version: 0.19.0
+          scope: ci
+          s3-endpoint: http://localhost:8333
+          s3-bucket: cache
+          s3-access-key-id: testkey
+          s3-secret-access-key: testsecret123
+          s3-write: 'true'
+      - name: assert mode
+        run: |
+          [ "${{ steps.sccache.outputs.enabled }}" = "true" ]
+          [ "${{ steps.sccache.outputs.rw-mode }}" = "${{ github.event_name == 'pull_request' && 'READ_ONLY' || 'READ_WRITE' }}" ]
+      - name: Build again (hit)
+        run: |
+          cd "$RUNNER_TEMP/demo" && cargo clean && cargo build
+          sccache --show-stats | grep -E "Cache hits +[1-9]"
