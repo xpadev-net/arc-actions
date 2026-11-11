@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Minimal S3 client using curl --aws-sigv4 (no aws CLI / zstd required).
-# Path-style addressing, compatible with SeaweedFS / MinIO / AWS.
+# Path-style addressing, compatible with SeaweedFS / AWS S3.
 #
 # Required env: S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY
 # Optional env: S3_REGION (default us-east-1)
