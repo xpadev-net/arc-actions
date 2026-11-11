@@ -1,0 +1,79 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck
+        run: shellcheck lib/*.sh
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+
+  setup-node:
+    runs-on: ubuntu-latest
+    env:
+      NODE_VERSION: 22.11.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Start SeaweedFS (S3)
+        run: |
+          docker run -d --name seaweedfs -p 8333:8333 \
+            -e AWS_ACCESS_KEY_ID=testkey -e AWS_SECRET_ACCESS_KEY=testsecret123 \
+            chrislusf/seaweedfs:4.53 server -dir=/data -s3 -volume.max=10
+          for i in $(seq 60); do curl -s -o /dev/null http://localhost:8333/ && break; sleep 1; done
+          sleep 3
+          curl -sf -X PUT --aws-sigv4 aws:amz:us-east-1:s3 --user testkey:testsecret123 \
+            -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" http://localhost:8333/cache
+
+      - name: 1st run (miss -> upload)
+        id: first
+        uses: ./setup-node
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          s3-endpoint: http://localhost:8333
+          s3-bucket: cache
+          s3-access-key-id: testkey
+          s3-secret-access-key: testsecret123
+          s3-write: 'true'
+      - name: assert miss
+        run: |
+          [ "${{ steps.first.outputs.s3-cache-hit }}" = "false" ]
+          [ "$(node -v)" = "v${NODE_VERSION}" ]
+
+      - name: wipe toolcache
+        run: sudo rm -rf "$RUNNER_TOOL_CACHE/node"
+
+      - name: 2nd run (hit)
+        id: second
+        uses: ./setup-node
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          s3-endpoint: http://localhost:8333
+          s3-bucket: cache
+          s3-access-key-id: testkey
+          s3-secret-access-key: testsecret123
+      - name: assert hit
+        run: |
+          [ "${{ steps.second.outputs.s3-cache-hit }}" = "true" ]
+          [ "$(node -v)" = "v${NODE_VERSION}" ]
+
+      - name: alias version falls back to actions/setup-node
+        id: alias
+        uses: ./setup-node
+        with:
+          node-version: 22
+          s3-endpoint: http://localhost:8333
+          s3-bucket: cache
+          s3-access-key-id: testkey
+          s3-secret-access-key: testsecret123
+      - run: node -v | grep -E '^v22\.'

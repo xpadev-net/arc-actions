@@ -1,0 +1,174 @@
+name: Setup Node.js (S3 toolcache)
+description: >
+  Drop-in wrapper for actions/setup-node. Pre-populates the runner toolcache from an
+  S3-compatible bucket so actions/setup-node does not need to download Node.js.
+  On a cache miss it behaves exactly like actions/setup-node and (optionally) uploads the result.
+
+inputs:
+  node-version:
+    description: Same as actions/setup-node. Only exact versions (e.g. 22.11.0) use the S3 cache.
+    required: false
+  node-version-file:
+    description: Same as actions/setup-node. Supports .nvmrc, .node-version and .tool-versions for exact versions.
+    required: false
+  architecture:
+    description: Target architecture (x64 / arm64). Defaults to the runner architecture.
+    required: false
+  check-latest:
+    required: false
+    default: 'false'
+  registry-url:
+    required: false
+  scope:
+    required: false
+  token:
+    required: false
+    default: ${{ github.server_url == 'https://github.com' && github.token || '' }}
+  cache:
+    description: Package manager cache passed to actions/setup-node (npm / yarn / pnpm).
+    required: false
+  cache-dependency-path:
+    required: false
+  package-manager-cache:
+    required: false
+    default: 'true'
+  s3-endpoint:
+    description: S3 endpoint URL. If empty, the S3 cache is skipped.
+    required: false
+  s3-bucket:
+    required: false
+  s3-access-key-id:
+    required: false
+  s3-secret-access-key:
+    required: false
+  s3-region:
+    required: false
+    default: us-east-1
+  s3-write:
+    description: Upload to S3 on cache miss. Enable only for trusted workflows (avoid cache poisoning).
+    required: false
+    default: 'false'
+  s3-prefix:
+    required: false
+    default: node
+
+outputs:
+  node-version:
+    description: Installed Node.js version
+    value: ${{ steps.setup.outputs.node-version }}
+  s3-cache-hit:
+    description: 'true if the toolcache was restored from S3'
+    value: ${{ steps.restore.outputs.hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        IN_VERSION: ${{ inputs.node-version }}
+        IN_FILE: ${{ inputs.node-version-file }}
+        IN_ARCH: ${{ inputs.architecture }}
+      run: |
+        set -euo pipefail
+        v="$IN_VERSION"
+        if [[ -z "$v" && -n "$IN_FILE" && -f "$IN_FILE" ]]; then
+          case "$IN_FILE" in
+            *.tool-versions) v="$(awk '$1=="nodejs"||$1=="node"{print $2; exit}' "$IN_FILE")" ;;
+            *.nvmrc | *.node-version | .nvmrc | .node-version) v="$(head -n1 "$IN_FILE" | tr -d '[:space:]')" ;;
+            *) v="" ;; # package.json etc. -> let actions/setup-node handle it
+          esac
+        fi
+        v="${v#v}"
+        arch="$IN_ARCH"
+        if [[ -z "$arch" ]]; then
+          case "${RUNNER_ARCH:-X64}" in ARM64) arch=arm64 ;; *) arch=x64 ;; esac
+        fi
+        exact=""
+        if [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then exact="$v"; fi
+        echo "version=$exact" >> "$GITHUB_OUTPUT"
+        echo "arch=$arch" >> "$GITHUB_OUTPUT"
+
+    - id: restore
+      if: steps.resolve.outputs.version != ''
+      shell: bash
+      env:
+        S3_ENDPOINT: ${{ inputs.s3-endpoint }}
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+        S3_ACCESS_KEY_ID: ${{ inputs.s3-access-key-id }}
+        S3_SECRET_ACCESS_KEY: ${{ inputs.s3-secret-access-key }}
+        S3_REGION: ${{ inputs.s3-region }}
+        VERSION: ${{ steps.resolve.outputs.version }}
+        ARCH: ${{ steps.resolve.outputs.arch }}
+        PREFIX: ${{ inputs.s3-prefix }}
+      run: |
+        set -uo pipefail
+        echo "hit=false" >> "$GITHUB_OUTPUT"
+        source "${{ github.action_path }}/../lib/s3.sh"
+        if ! s3_configured; then echo "S3 not configured; falling back to actions/setup-node"; exit 0; fi
+        tooldir="${RUNNER_TOOL_CACHE}/node/${VERSION}/${ARCH}"
+        if [[ -f "${tooldir}.complete" ]]; then
+          echo "Already in toolcache"; echo "hit=true" >> "$GITHUB_OUTPUT"; exit 0
+        fi
+        tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+        s3_get "${PREFIX}/v${VERSION}/linux-${ARCH}.tar.gz" "$tmp/node.tar.gz"; rc=$?
+        if [[ $rc -eq 0 ]]; then
+          mkdir -p "$tooldir"
+          if tar -xzf "$tmp/node.tar.gz" -C "$tooldir" && [[ -x "$tooldir/bin/node" ]]; then
+            touch "${tooldir}.complete"
+            echo "Restored Node.js ${VERSION} (${ARCH}) from S3"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Corrupt S3 archive; falling back to actions/setup-node"
+            rm -rf "$tooldir" "${tooldir}.complete"
+          fi
+        elif [[ $rc -eq 1 ]]; then
+          echo "S3 cache miss for Node.js ${VERSION} (${ARCH})"
+        else
+          echo "::warning::S3 error; falling back to actions/setup-node"
+        fi
+
+    - id: setup
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ steps.resolve.outputs.version != '' && steps.resolve.outputs.version || inputs.node-version }}
+        node-version-file: ${{ steps.resolve.outputs.version == '' && inputs.node-version-file || '' }}
+        architecture: ${{ inputs.architecture }}
+        check-latest: ${{ inputs.check-latest }}
+        registry-url: ${{ inputs.registry-url }}
+        scope: ${{ inputs.scope }}
+        token: ${{ inputs.token }}
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+        package-manager-cache: ${{ inputs.package-manager-cache }}
+
+    - id: upload
+      if: >-
+        inputs.s3-write == 'true' && steps.resolve.outputs.version != '' &&
+        steps.restore.outputs.hit != 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        S3_ENDPOINT: ${{ inputs.s3-endpoint }}
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+        S3_ACCESS_KEY_ID: ${{ inputs.s3-access-key-id }}
+        S3_SECRET_ACCESS_KEY: ${{ inputs.s3-secret-access-key }}
+        S3_REGION: ${{ inputs.s3-region }}
+        VERSION: ${{ steps.resolve.outputs.version }}
+        ARCH: ${{ steps.resolve.outputs.arch }}
+        PREFIX: ${{ inputs.s3-prefix }}
+      run: |
+        set -uo pipefail
+        source "${{ github.action_path }}/../lib/s3.sh"
+        s3_configured || exit 0
+        tooldir="${RUNNER_TOOL_CACHE}/node/${VERSION}/${ARCH}"
+        if [[ ! -f "${tooldir}.complete" || ! -x "$tooldir/bin/node" ]]; then
+          echo "::warning::Node.js not found in toolcache; skip upload"; exit 0
+        fi
+        tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+        tar -czf "$tmp/node.tar.gz" -C "$tooldir" .
+        if s3_put "${PREFIX}/v${VERSION}/linux-${ARCH}.tar.gz" "$tmp/node.tar.gz"; then
+          echo "Uploaded Node.js ${VERSION} (${ARCH}) to S3"
+        else
+          echo "::warning::S3 upload failed"
+        fi
