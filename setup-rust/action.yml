@@ -1,0 +1,73 @@
+name: Setup Rust (S3 toolchain cache)
+description: >
+  Installs a Rust toolchain with rustup, restoring it from an S3-compatible bucket when possible.
+  Installs rustup itself if the runner does not have it. On a cache miss it performs a regular
+  `rustup toolchain install` and (optionally) uploads the result.
+
+inputs:
+  toolchain:
+    description: >
+      Rust toolchain. Fully pinned values (1.85.0, nightly-2026-01-01) use the S3 cache;
+      aliases (stable, beta, nightly, 1.85) are installed with plain rustup.
+    required: true
+  profile:
+    description: rustup profile
+    required: false
+    default: minimal
+  components:
+    description: Comma-separated list of extra components (e.g. clippy,rustfmt)
+    required: false
+  targets:
+    description: Comma-separated list of extra target triples
+    required: false
+  s3-endpoint:
+    description: S3 endpoint URL. If empty, the S3 cache is skipped.
+    required: false
+  s3-bucket:
+    required: false
+  s3-access-key-id:
+    required: false
+  s3-secret-access-key:
+    required: false
+  s3-region:
+    required: false
+    default: us-east-1
+  s3-write:
+    description: >
+      Upload to S3 on cache miss. Ignored on pull_request / pull_request_target events.
+      Enable only for trusted workflows with a dedicated write credential.
+    required: false
+    default: 'false'
+  s3-prefix:
+    required: false
+    default: rust
+
+outputs:
+  name:
+    description: Installed toolchain name
+    value: ${{ steps.setup.outputs.name }}
+  rustc-version:
+    description: Output of `rustc --version`
+    value: ${{ steps.setup.outputs.rustc-version }}
+  s3-cache-hit:
+    description: 'true if the toolchain was restored from S3'
+    value: ${{ steps.setup.outputs.hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+        PROFILE: ${{ inputs.profile }}
+        COMPONENTS: ${{ inputs.components }}
+        TARGETS: ${{ inputs.targets }}
+        S3_ENDPOINT: ${{ inputs.s3-endpoint }}
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+        S3_ACCESS_KEY_ID: ${{ inputs.s3-access-key-id }}
+        S3_SECRET_ACCESS_KEY: ${{ inputs.s3-secret-access-key }}
+        S3_REGION: ${{ inputs.s3-region }}
+        S3_WRITE: ${{ inputs.s3-write }}
+        S3_PREFIX: ${{ inputs.s3-prefix }}
+      run: ${{ github.action_path }}/run.sh

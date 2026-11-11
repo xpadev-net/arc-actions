@@ -45,7 +45,9 @@ inputs:
     required: false
     default: us-east-1
   s3-write:
-    description: Upload to S3 on cache miss. Enable only for trusted workflows (avoid cache poisoning).
+    description: >
+      Upload to S3 on cache miss. Ignored on pull_request / pull_request_target events.
+      Enable only for trusted workflows with a dedicated write credential.
     required: false
     default: 'false'
   s3-prefix:
@@ -145,7 +147,8 @@ runs:
     - id: upload
       if: >-
         inputs.s3-write == 'true' && steps.resolve.outputs.version != '' &&
-        steps.restore.outputs.hit != 'true'
+        steps.restore.outputs.hit != 'true' &&
+        github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
       continue-on-error: true
       shell: bash
       env:
