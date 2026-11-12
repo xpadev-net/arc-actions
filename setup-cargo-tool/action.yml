@@ -1,14 +1,15 @@
 name: Setup cargo tool (S3 binary cache)
 description: >
-  Installs prebuilt binaries of pinned cargo tools (cargo-deny, sccache), restoring them from an
-  S3-compatible bucket when possible. On a miss the release binary is downloaded from GitHub,
+  Installs prebuilt binaries of pinned tools (cargo-deny, sccache, zig, cargo-zigbuild), restoring them from an
+  S3-compatible bucket when possible. On a miss the release binary is downloaded from upstream,
   SHA-256 verified and (optionally) uploaded to S3. No compilation is involved.
 
 inputs:
   tools:
     description: >
       Tools to install, one per line or comma separated, as name@x.y.z (e.g. cargo-deny@0.20.2).
-      Supported: cargo-deny, sccache. Versions must be pinned exactly.
+      Supported: cargo-deny, sccache, zig, cargo-zigbuild. Versions must be pinned exactly.
+      Zig and cargo-zigbuild require jq and xz; Zig includes its standard libraries.
     required: true
   s3-endpoint:
     description: S3 endpoint URL. If empty, always download from upstream.

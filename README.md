@@ -5,7 +5,7 @@ Shared actions and reusable workflows for self-hosted ARC runners.
 | Path | Kind | Description |
 | --- | --- | --- |
 | [`setup-node`](setup-node) | composite action | Drop-in wrapper for `actions/setup-node` backed by an S3 toolcache |
-| [`setup-cargo-tool`](setup-cargo-tool) | composite action | Pinned prebuilt cargo tools (`cargo-deny`, `sccache`) restored from S3 |
+| [`setup-cargo-tool`](setup-cargo-tool) | composite action | Pinned prebuilt cargo tools (`cargo-deny`, `sccache`, `zig`, `cargo-zigbuild`) restored from S3 |
 | [`setup-sccache`](setup-sccache) | composite action | sccache with an S3 backend; read-only outside the default branch |
 | [`setup-rust`](setup-rust) | composite action | rustup-based Rust toolchain install backed by an S3 cache (installs rustup if missing) |
 
@@ -60,15 +60,20 @@ read-only key there and `s3-write: false`.
   with:
     tools: |
       cargo-deny@0.20.2
+      zig@0.15.2
+      cargo-zigbuild@0.24.1
     s3-endpoint: ${{ secrets.S3_ENDPOINT }}
     s3-bucket: ${{ secrets.S3_BUCKET }}
     s3-access-key-id: ${{ secrets.S3_ACCESS_KEY_ID }}
     s3-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
 ```
 
-- Downloads release binaries (no `cargo install`/compilation). On a miss the upstream archive is fetched from
-  GitHub, its SHA-256 is verified, and it is stored in S3 (only when writing is allowed).
-- Exact versions only (`x.y.z`). Currently supported: `cargo-deny`, `sccache`. Add a tool in `lib/tool.sh`.
+- Downloads release binaries (no `cargo install`/compilation). On a miss the release archive is fetched from its upstream project, its SHA-256 is verified, and it is stored in S3 (only when writing is allowed).
+- Exact versions only (`x.y.z`). Supported: `cargo-deny`, `sccache`, `zig`, `cargo-zigbuild`. Add a tool in `lib/tool.sh`.
+- Linux x86_64 / aarch64 only. Requires `curl`, `tar`, and `sha256sum`; Zig and cargo-zigbuild also require `jq` and `xz`.
+- Zig URLs and SHA-256 hashes come from the official Zig download index. The complete distribution, including `lib/`, is cached so compilation works after restore.
+- cargo-zigbuild uses GitHub release metadata and SHA-256 sidecars. Both legacy gzip and cargo-dist xz releases are supported; musl binaries are preferred. Releases that only publish GNU binaries for an architecture (such as cargo-zigbuild 0.24.1 on aarch64) require a compatible glibc runner.
+- Install both `zig` and `cargo-zigbuild` to run `cargo zigbuild`; Rust and the requested Rust target must be installed separately, for example with `setup-rust`.
 - Objects: `<s3-prefix>/<tool>/<version>/<arch>.tar.gz` (default prefix `tools`).
 
 ## setup-sccache

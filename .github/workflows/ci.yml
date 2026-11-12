@@ -13,7 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
-        run: shellcheck -x -P SCRIPTDIR lib/*.sh setup-rust/*.sh setup-cargo-tool/*.sh setup-sccache/*.sh
+        run: shellcheck -x -P SCRIPTDIR lib/*.sh setup-rust/*.sh setup-cargo-tool/*.sh setup-sccache/*.sh tests/*.sh
+      - name: Tool installer fixture tests
+        run: python3 tests/test_tools.py
       - name: actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
@@ -133,7 +135,10 @@ jobs:
           cargo clippy --version
 
   setup-cargo-tool:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     env:
       S3_ENDPOINT: http://localhost:8333
       S3_BUCKET: cache
@@ -154,14 +159,17 @@ jobs:
       - name: Seed cache (script, simulated default-branch run)
         run: |
           S3_WRITE=true GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main DEFAULT_BRANCH=main \
-            TOOLS=cargo-deny@0.20.2 ./setup-cargo-tool/run.sh
+            TOOLS=cargo-deny@0.20.2,zig@0.15.2,cargo-zigbuild@0.24.1 ./setup-cargo-tool/run.sh
       - name: Wipe local copy
         run: rm -rf "$RUNNER_TOOL_CACHE/arc-tools"
       - name: Use the action (hit expected)
         id: tool
         uses: ./setup-cargo-tool
         with:
-          tools: cargo-deny@0.20.2
+          tools: |
+            cargo-deny@0.20.2
+            zig@0.15.2
+            cargo-zigbuild@0.24.1
           s3-endpoint: http://localhost:8333
           s3-bucket: cache
           s3-access-key-id: testkey
@@ -170,6 +178,10 @@ jobs:
         run: |
           [ "${{ steps.tool.outputs.s3-cache-hit }}" = "true" ]
           cargo deny --version | grep -F 0.20.2
+          zig version | grep -Fx 0.15.2
+          cargo-zigbuild --version | grep -F 0.24.1
+      - name: Build using restored Zig libraries and cargo-zigbuild
+        run: bash tests/smoke-build.sh
       - name: write is refused outside the default branch
         run: |
           rm -rf "$RUNNER_TOOL_CACHE/arc-tools"
